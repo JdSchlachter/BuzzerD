@@ -16,6 +16,13 @@
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
 
+/** Notes: *************************************************************************** 
+
+Read log with: sudo tail -f /var/log/daemon.log -n 10
+
+*************************************************************************************/
+
+
 /** Global Includes: ****************************************************************/
 
 #include <stdio.h>
@@ -27,12 +34,6 @@
 
 #include "daemon.h"
 #include "client.h"
-
-/** Notes: *************************************************************************** 
-
-Read log with: sudo tail -f /var/log/daemon.log -n 10
-
-Build with: gcc -o BuzzerD BuzzerD.cpp deamon.cpp -l bcm2835                        */
 
 /** Forward Declarations: ***********************************************************/
 

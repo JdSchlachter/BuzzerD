@@ -16,6 +16,29 @@
 //  along with this program.  If not, see <https://www.gnu.org/licenses/>.
 //
 
-/** Forward Declarations: ***********************************************************/
+/** Type-Definitions: ***************************************************************/
 
-int  RunDemon();
+#define LED_MODE_ON      1
+#define LED_MODE_OFF     2
+#define LED_MODE_SUCCESS 3
+#define LED_MODE_ALIVE   4
+
+/** Class Definition: ***************************************************************/
+
+class CConfigHandler {
+public:
+    // Properties:
+    bool           b_Shutdown;
+    bool           b_Debug;
+    unsigned char  ub_LedMode;
+    char           s_Executable[1024];
+    char           s_ClientLog [1024];
+    // Methods:
+    CConfigHandler();
+    ~CConfigHandler();
+    bool ReadConfig  (char* sFileName);
+    void HandleClient(int sockfd);
+private:
+    bool CheckCmd    (char* sInput, const char* sCommand, char* sResult);
+    void SendToSocket(int sockfd, const char* Message);
+};

@@ -33,35 +33,28 @@
 #include <bcm2835.h>
 
 #include "daemon.h"
+#include "ConfigHandler.h"
 
 /** Local Defines: ******************************************************************/
 
 #define PIN_LED         RPI_V2_GPIO_P1_37
 #define PIN_BTN         RPI_V2_GPIO_P1_12
-#define BUFFSIZE        1024
 #define SOCK_FILE       (char*) "/tmp/BuzzerD.sock"
 
 /** Global Variables: ***************************************************************/
 
-volatile bool           b_Debug;
+CConfigHandler          Config;
 volatile bool           b_Alive;
 volatile bool           b_LastResult;
 volatile bool           b_ExecRunning;
-volatile unsigned char  ub_LedMode;
 volatile unsigned char  ub_BuzzCount;
-volatile char           s_Executable[1024];
-volatile char           s_Arguments [1024];
 volatile pid_t          p_ClientPid;
 pthread_mutex_t         mutex_BuzzCount; 
 
 /** Forward Declarations: ***********************************************************/
 
 int  RunDemon      ();
-void HandleClient  (int sockfd);
 void RunExecutable ();
-void SendString    (int sockfd, const char* Message);
-bool ReadConfig    (char* sFileName);
-bool CheckCfgCmd   (char* sInput, const char* sCommand, char* sResult);
 void SIG_Alarm     (int signum);
 void SIG_ChildTerm (int signum);
 void SIG_Quit      (int signum);
@@ -81,14 +74,13 @@ int RunDemon() {
     int       iResult;
     
     /** Read configuration: *********************************************************/
-    b_Debug       = false;
-    b_ExecRunning = false;
-    if (! ReadConfig((char*)"/etc/buzzerd.conf") ) {
+    if (! Config.ReadConfig((char*)"/etc/buzzerd.conf") ) {
         printf ("ERR: Unable to read configuration!\n");        
         return -2;
     }
     
     /** Set up the demon: ***********************************************************/
+    b_ExecRunning = false;
     pid = fork();
     if (pid < 0) {
         return -2;
@@ -101,7 +93,7 @@ int RunDemon() {
     }
     
     /** Close out the standard file descriptors:                                    */
-    if (! b_Debug) {        
+    if (! Config.b_Debug) {        
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
@@ -112,7 +104,7 @@ int RunDemon() {
     
     /** Prepare the Mutex:                                                          */
     if (pthread_mutex_init(&mutex_BuzzCount, NULL) != 0) {
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE CREATING MUTEX!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE CREATING MUTEX!");
         return -2;
     }
 
@@ -123,21 +115,21 @@ int RunDemon() {
     sid = setsid();
     if (sid < 0) {
         /* Log the failure and exit:                                                */
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE SETTING UP CLIENT-PROCCESS!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE SETTING UP CLIENT-PROCCESS!");
         return -2;
     }
 
     /* Change the current working directory */
     if ((chdir("/")) < 0) {
         /* Log the failure and exit:                                                */
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE SETTING UP CLIENT-PROCCESS!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE SETTING UP CLIENT-PROCCESS!");
         return -2;
     }    
     
     /** Setup BCM hardware-library: *************************************************/
     if (!bcm2835_init()) {
         /* Log the failure and exit:                                                */
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE ACCESSING THE BCM HW LIBRARY!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE ACCESSING THE BCM HW LIBRARY!");
         return -2;
     }
     
@@ -173,7 +165,7 @@ int RunDemon() {
 
     /** Create Socket: **************************************************************/
     if((iServerID=socket (AF_LOCAL, SOCK_STREAM, 0)) == 0) {
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE CREATING A SOCKET!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE CREATING A SOCKET!");
         return -2;
     }
     /** Bind socket to file:                                                        */
@@ -181,7 +173,7 @@ int RunDemon() {
     SocketAddress.sun_family = AF_LOCAL;
     strcpy(SocketAddress.sun_path, SOCK_FILE);
     if (bind ( iServerID, (struct sockaddr *) &SocketAddress, sizeof (SocketAddress)) != 0) {
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE BINDING SOCKET!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE BINDING SOCKET!");
         return -2;
     }
 
@@ -194,11 +186,11 @@ int RunDemon() {
 	pfds[0].events = POLLIN;
 
     /** Note the successful initialization:                                         */
-    syslog(LOG_NOTICE + LOG_DAEMON, "Sucessfully initialized.");
+    syslog(LOG_NOTICE | LOG_DAEMON, "Sucessfully initialized.");
     
     /* Main-Loop: *******************************************************************/
     b_Alive = true;
-    while(b_Alive) {
+    while((b_Alive) && (! Config.b_Shutdown)){
         /** Poll the socket with a 10ms timeout:                                    */
         iResult = poll(pfds, 1, 10);
         /** Check, if there was a request on the poll:                              */
@@ -207,7 +199,7 @@ int RunDemon() {
             iClientId = accept ( iServerID, (struct sockaddr *) &SocketAddress, &AddressLen );
             if (iClientId < 1) continue;
             /** It connected, so run the client-handler on it:                      */
-            HandleClient(iClientId);
+            Config.HandleClient(iClientId);
             close (iClientId);
         }
         /** Check, if there was a buzzer-press:                                     */
@@ -232,161 +224,52 @@ int RunDemon() {
     
     pthread_mutex_destroy(&mutex_BuzzCount);
 
-    syslog(LOG_NOTICE + LOG_DAEMON, "Received SigInt and closed.");
+    syslog(LOG_NOTICE | LOG_DAEMON, "Received SigInt and closed.");
     closelog();
     return 0;    
 }
-
-void HandleClient(int sockfd){
-    /** Variables:                                                                  */
-    char    Command[BUFFSIZE];
-    ssize_t RxLen;
-    
-    /** Try to fetch the command:                                                   */    
-    RxLen = recv (sockfd, Command, sizeof(Command)-1, 0);
-    /** If something was received, try to parse it:                                 */
-    if( RxLen > 0) {
-        if ((Command[0] == '-') && (Command[1] == 'q')){
-            /** It is an exit-command:                                              */
-            b_Alive = false;
-            SendString(sockfd, "Received quit.");
-        }else if ((Command[0] == '-') && (Command[1] == 'x')){
-            /** It is a command to replace the executable:                          */
-            Command[RxLen] = 0;
-            strcpy((char*)s_Executable, (&Command[3]));
-            SendString(sockfd, "Updated executable.");
-        }else if ((Command[0] == '-') && (Command[1] == 'a')){
-            /** It is a command to replace the arguments:                           */
-            Command[RxLen] = 0;
-            strcpy((char*)s_Arguments, (&Command[3]));
-            SendString(sockfd, "Updated arguments.");
-        }else if ((Command[0] == '-') && (Command[1] == 'l')){
-            /** It is an LED command, so parse it:                                  */
-            Command[RxLen] = 0;
-            if (strlen(Command) < 5) {
-                SendString(sockfd, "Missing LED parameter!");
-            }else if (strcmp ((&Command[3]), (char*) "on")==0) {
-                ub_LedMode = LED_MODE_ON;
-                SendString(sockfd, "Set LED Mode on!");
-            }else if (strcmp((&Command[3]), (char*) "off")==0) {
-                ub_LedMode = LED_MODE_OFF;
-                SendString(sockfd, "Set LED Mode off!");
-            }else if (strcmp((&Command[3]), (char*) "success")==0) {
-                ub_LedMode = LED_MODE_SUCCESS;
-                SendString(sockfd, "Set LED Mode success!");
-            }else if (strcmp((&Command[3]), (char*) "alive")==0) {
-                ub_LedMode = LED_MODE_ALIVE;
-                SendString(sockfd, "Set LED Mode alive!");
-            }else{
-                SendString(sockfd, "ERR: Unable to parse LED parameter!");
-            }
-        }else{
-            /** It was no valid command at all:                                     */
-            SendString(sockfd, "Unable to parse command!");
-        }
-    }
-}
-
-void SendString   (int sockfd, const char* Message){
-    send(sockfd, Message, strlen(Message), 0);
-}
-    
+   
 void RunExecutable(){
     /** Variables:                                                                  */     
     int   pid;
+    char  buffer[2048];
+    int   iResult;
+    FILE  *fp;
     /** Try to fork to run the executable as client-proccess:                       */        
     pid = fork();
     if (pid < 0) {
-        syslog(LOG_ERR + LOG_DAEMON, "FAILURE FORKING FOR EXECUTABLE CLIENT!");
+        syslog(LOG_ERR | LOG_DAEMON, "FAILURE FORKING FOR EXECUTABLE CLIENT!");
         return;
     }
-    /** If we got a good PID, then we can exit the parent process:                  */
+    /** If we got a good PID, then we can return to the main-loop:                  */
     if (pid > 0) {
         b_ExecRunning = true;
         return;
     }
-    /** In the client, replace the proccess with a call to bash:                    */
-    execlp("bash", "bash", (char*) s_Executable, (char*) s_Arguments, NULL);    
-}
-
-bool ReadConfig(char* sFileName) {
-    /** Variables:                                                                  */
-    FILE *fp;
-    char sBuffer[1024], sResult[1024];
-    bool bExeSet = false;    
-    bool bArgSet = false;    
-    bool bLedSet = false;
-    /** Try to open the configuration-file:                                         */
-    fp = fopen(sFileName,"r");
-    if (fp == 0) return false;
-    /** Cycle through the file:                                                     */
-    while (! feof(fp)) {
-        /** Try to fetch a line:                                                    */
-        if (!fgets(sBuffer, sizeof(sBuffer), fp)) break;
-        /** Check, if it is a comment:                                              */
-        if ((sBuffer[0] == ';') || (sBuffer[0] == '#')) continue;
-        /** Check for the executable:                                               */
-        if (CheckCfgCmd(sBuffer, (char*) "Executable", sResult)) {
-            strcpy((char*)s_Executable, sResult);
-            bExeSet = true;
-        }
-        /** Check for the arguments:                                                */
-        if (CheckCfgCmd(sBuffer, (char*) "Arguments", sResult)) {
-            strcpy((char*)s_Arguments, sResult);
-            bArgSet = true;
-        }
-        /** Check for the LED command:                                              */
-        if (CheckCfgCmd(sBuffer, (char*) "LED", sResult)) {
-            if (strcmp(sResult, (char*) "on")==0) {
-                ub_LedMode = LED_MODE_ON;
-                bLedSet    = true;
-            }else if (strcmp(sResult, (char*) "off")==0) {
-                ub_LedMode = LED_MODE_OFF;
-                bLedSet    = true;
-            }else if (strcmp(sResult, (char*) "success")==0) {
-                ub_LedMode = LED_MODE_SUCCESS;
-                bLedSet    = true;
-            }else if (strcmp(sResult, (char*) "alive")==0) {
-                ub_LedMode = LED_MODE_ALIVE;
-                bLedSet    = true;
-            }
-        }
-        /** Check for a debug-command:                                              */
-        if (CheckCfgCmd(sBuffer, "debug", sResult)) {
-            b_Debug = true;
-        }
+    /** Build the execuable command:                                                */
+    strcpy(buffer, "bash ");
+    strcat(buffer, Config.s_Executable);
+    if (Config.s_ClientLog[0] != 0) {
+        strcat(buffer, " >");
+        strcat(buffer, Config.s_ClientLog);
     }
-    fclose(fp);
-    return (bExeSet && bArgSet && bLedSet);
-}
-
-bool CheckCfgCmd(char* sInput, const char* sCommand, char* sResult) {
-    int n, i;
-    /** Check, if the length of the command is in the input:                        */
-    if (strlen(sInput) < strlen(sCommand)) return false;
-    /** Check, if the command is at the beginning of the input:                     */
-    i = 0;
-    n = strlen(sCommand) - 1;
-    while ((i<n) && (sInput[i] == sCommand[i])) i++;
-    if (sInput[i] != sCommand[i]) return false;
-    /** The command is alright, so go one character behind it:                      */
-    i++;
-    /** Trim the left side of the parameter:                                        */
-    n = strlen(sInput);
-    while ((i<n) && ((sInput[i] == ' ') || (sInput[i] == '\t'))) i++;
-    /** Trim the right side of the parameter:                                       */
-    while ((n>0                                                             )&&
-           ((sInput[n-1] == ' ') || (sInput[n-1] == '\r') || (sInput[n-1] == '\n'))  ) n--;
-    sInput[n] = 0;
-    /** Copy the output:                                                            */
-    strcpy(sResult, &sInput[i]);
-    return true;
+    /** Run it:                                                                     */    
+    iResult = system(buffer);
+    /** If a log-file is configured, add the exit-code:                             */
+    if (Config.s_ClientLog[0] != 0) {
+        fp = fopen(Config.s_ClientLog,"a");
+        if (fp == 0) _exit(1);        
+        sprintf(buffer, "\nbuzzerd: Client exited with code %i.", WEXITSTATUS(iResult));
+        fputs(buffer, fp);
+        fclose(fp);
+    }
+    _exit(WEXITSTATUS(iResult));
 }
 
 void SIG_Alarm (int signum) {
+    /** Variables:                                                                  */
     static int ul_AliveCount    = 19;
-    static int ul_DebounceCount = 0;   
-    
+    static int ul_DebounceCount = 0;       
     /** Handle the buzzer-state:                                                    */
     if (! bcm2835_gpio_lev(PIN_BTN)) {
         /** The level is low, thus the buzzer was pressed:                          */
@@ -398,16 +281,14 @@ void SIG_Alarm (int signum) {
         }
         ul_DebounceCount = 3;
     }
-    
     /** Handle the debounce-counter:                                                */
-    if (ul_DebounceCount > 0) ul_DebounceCount--; 
-    
+    if (ul_DebounceCount > 0) ul_DebounceCount--;
     /** Switch the LED according to its state:                                      */
-    if (ub_LedMode == LED_MODE_ON) {
+    if (Config.ub_LedMode == LED_MODE_ON) {
         bcm2835_gpio_write(PIN_LED, HIGH);
-    }else if (ub_LedMode == LED_MODE_OFF) {
+    }else if (Config.ub_LedMode == LED_MODE_OFF) {
         bcm2835_gpio_write(PIN_LED, LOW);
-    }else if (ub_LedMode == LED_MODE_SUCCESS) {
+    }else if (Config.ub_LedMode == LED_MODE_SUCCESS) {
         if (b_LastResult) {
             bcm2835_gpio_write(PIN_LED, HIGH);
         }else{

@@ -2,7 +2,7 @@
 
 ## Overview
 
-BuzzerD is a small Raspberry Pi daemon, which runs a given executable upon the press of a buzzer.
+BuzzerD is a small daemon, which runs a given executable upon the press of a buzzer.
 
 It expects an LED to be connected between the Raspberry PI’s pin 37 and ground (mind the required resistor of at least 220 ohms) as well as any kind of push-button between pin 12 and ground.
 
@@ -43,8 +43,16 @@ There are three source-files (plus headers):
 
  - _buzzerd.cpp_ The main executable of this project. It simply checks, whether command-line options are supplied and - depending on that - calls the daemon or the client.
  - _daemon.cpp_ This does the complete handling of the internals of the daemon. It contains the entry code, which reads the configuration, sets up the independent process, sets up a signal handler, which checks the buzzer each 50 ms and handles a server-socket, which allows the configuration to be changed at run-time.
+ - _ConfigHandler.cpp_ This is the handler for all configuration-items of the buzzer-deamon. It contains the code the read the configuration-file, parse its arguments and handle the communication with any client, which tries to change settings. 
  - _client.cpp_ This is the code to be run as client. It tries to open the socket to the server and passes on the command-line arguments in order to be processed in the daemon.
  
+## Known bugs and further steps
+
+ - Some commands only work, when being called via a script. Thus, if for instance a directory listing is required, the _ls_ command is to be placed in a bash-script, which then can be called as executable of the daemon.
+ - Changing the LED state out of the executable script (e.g. to show a status via _buzzerd -l off_) only works, when the daemon is configured to be in debug mode.
+ - There is no service-file in _/etc/systemd/system_ available yet, thus this does not work yet via systemd.
+ - The HW pins are currently hard-coded. Eventually, they are supposed to be handled via the configuration.
+
 ## License
 Copyright (C) 2020 Jens Daniel Schlachter (<osw.schlachter@mailbox.org>)  
   
