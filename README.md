@@ -32,9 +32,9 @@ Following command-line parameters are available:
 
 The configuration of the daemon is done in */etc/buzzerd.conf*. In there, the following options have to be defined:
 
- - _LED  (on|off|alive|success>)_ to set the LED into the according mode.
  - _Executable  <executable>_ to set the executable to the called upon a buzzer-press.
- - _Arguments  <argumens>_ to set the arguments to be passed on to the executable upon a buzzer-press.  
+ - _ClientOutput <logfile>_ to define a file, in which the client's output will be logged. 
+ - _LED  (on|off|alive|success>)_ to set the LED into the according mode.
  - _debug_ to keep the access to the text-console open for debugging reasons.
 
 ## Internals
